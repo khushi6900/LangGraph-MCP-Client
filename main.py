@@ -1,18 +1,23 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from Chatbot_with_mcp import setup_graph, load_chat_history
+from Chatbot_with_mcp import setup_graph, load_chat_history, process_uploaded_file
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 import asyncio
 import json
 import logging
+import os
+import uuid
 
 app = FastAPI()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ------------------ CORS ------------------
 app.add_middleware(
@@ -26,6 +31,8 @@ app.add_middleware(
 # ------------------ Global ------------------
 chatbot = None
 tool_dict = None
+db = None
+ACTIVE_FILE_ID = None
 
 class ChatRequest(BaseModel):
     thread_id: str
@@ -46,6 +53,69 @@ async def startup_event():
 def root():
     return {"message": "Chatbot API running"}
 
+# ===================================================================
+#                   File Upload ENDPOINT
+# ===================================================================
+
+# Store active file_id (in memory; later you can use session storage)
+@app.post("/upload/{thread_id}")
+async def upload_file(thread_id: str, file: UploadFile = File(...)):
+    global ACTIVE_FILE_ID, db  
+    
+    print(f"UPLOAD REQUEST")
+    print(f"   Thread ID: {thread_id}")
+    print(f"   Filename: {file.filename}")
+    print(f"   Content-Type: {file.content_type}")
+    
+    try:
+        file_id = str(uuid.uuid4())
+        file_path = os.path.join(UPLOAD_DIR, file.filename)
+        
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        
+        file_content = await file.read()
+        print(f"Received {len(file_content)} bytes")
+        
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+        
+        print(f"Saved to: {file_path}")
+        print(f"File size on disk: {os.path.getsize(file_path)} bytes")
+        
+        # Process the file
+        process_uploaded_file(file_path, file_id)
+        
+
+        if db:
+            print(f"Total vectors: {db.index.ntotal}")
+            
+            # Test search
+            test_results = db.similarity_search("test", k=3)
+            print(f"   Test search returned: {len(test_results)} results")
+            for i, doc in enumerate(test_results):
+                print(f"     Result {i}: file_id={doc.metadata.get('file_id')}")
+        
+        return {
+            "message": "File uploaded & processed",
+            "file_id": file_id,
+            "filename": file.filename,
+            "active_file_id": ACTIVE_FILE_ID,
+            "total_vectors": db.index.ntotal if db else 0,
+            "file_size": os.path.getsize(file_path)
+        }
+        
+    except Exception as e:
+        print(f"\nERROR in upload endpoint:")
+        print(f"   {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        return {
+            "error": str(e),
+            "message": "Upload failed",
+            "active_file_id": ACTIVE_FILE_ID,
+            "total_vectors": db.index.ntotal if db else 0
+        }
 
 # ===================================================================
 #                   MAIN STREAMING ENDPOINT

@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chatbot with Sidebar</title>
-    <script src="https://cdn.tailwindcss.com?config=../tailwind.config.js"></script>
+    <title>Chatbot</title>
+
+    <!-- Tailwind -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Markdown Converter -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js"></script>
 </head>
 
@@ -14,20 +18,26 @@
     <aside class="w-64 bg-gray-100 border-r p-4 flex flex-col">
         <h2 class="text-xl font-semibold mb-4">Chats</h2>
 
-        <!-- New chat button -->
+        <!-- Uploaded files (per thread only) -->
+        <h3 class="text-sm font-semibold text-gray-600 mb-1">Files</h3>
+        <div id="uploaded-files" class="mb-4 space-y-2 text-sm text-gray-700">
+            <!-- Uploaded files will appear here -->
+        </div>
+
+        <!-- New Chat -->
         <button id="new-chat-btn"
-                class="w-full mb-4 py-2 bg-cyan-700 text-white rounded-lg hover:bg-cyan-800">
+            class="w-full mb-4 py-2 bg-cyan-700 text-white rounded-lg hover:bg-cyan-800">
             + New Chat
         </button>
 
-        <!-- Chat History List -->
+        <!-- Chat History -->
         <div id="chat-history" class="flex-1 overflow-y-auto space-y-2">
-    <!-- Chat rows are injected here by JS -->
+            <!-- Chat rows inserted by JS -->
         </div>
     </aside>
 
     <!-- MAIN CHAT AREA -->
-    <div class="flex-1 flex flex-col">
+    <main class="flex-1 flex flex-col">
 
         <!-- Header -->
         <header class="p-4 shadow bg-white">
@@ -36,33 +46,48 @@
 
         <!-- Chat Messages -->
         <div id="chat-container" class="flex-1 overflow-y-auto p-4 space-y-4">
-            <!-- Example bot message -->
-            <div class="flex">
-                <div class="bg-gray-200 p-3 rounded-lg max-w-lg">
-                    Hello! How can I help you?
-                </div>
-            </div>
+            <!-- Messages inserted dynamically -->
         </div>
+
+        <!-- Upload status below input -->
+        <div id="upload-status" class="text-sm text-gray-500 px-6 py-1"></div>
 
         <!-- Input Box -->
         <div class="p-4 bg-white border-t">
-            <div class="flex gap-2">
+            <div class="flex items-center bg-gray-100 rounded-full px-4 py-2 shadow-sm gap-3">
+
+                <!-- + Icon -->
+                <button id="file-upload-btn"
+                    class="text-2xl text-gray-600 hover:text-black transition relative group select-none">
+                    +
+                    <!-- Tooltip -->
+                    <span class="absolute left-1/2 -bottom-8 -translate-x-1/2 
+                        bg-black text-white text-xs px-2 py-1 rounded-md whitespace-nowrap 
+                        shadow-lg opacity-0 group-hover:opacity-100 transition">
+                        Add files
+                    </span>
+                </button>
+
+                <!-- Hidden input -->
+                <input type="file" id="hidden-file-input" style="display: none;" />
+
+                <!-- Text Input -->
                 <input 
                     id="user-input" 
                     type="text" 
-                    placeholder="Type your message..."
-                    class="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-black"
+                    placeholder="Ask anything..."
+                    class="flex-1 bg-transparent p-2 focus:outline-none text-black"
                 />
 
+                <!-- Send Button -->
                 <button 
                     id="send-btn"
-                    class="px-4 py-3 bg-cyan-700 text-white rounded-lg hover:bg-cyan-900 transition">
+                    class="px-4 py-2 bg-cyan-700 text-white rounded-full hover:bg-cyan-900 transition">
                     Send
                 </button>
             </div>
         </div>
-
-    </div>
+    </main>
 
     <script src="./script.js"></script>
 </body>
