@@ -5,7 +5,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 import aiosqlite
 from langgraph.graph.message import add_messages
 from langchain_tavily import TavilySearch
-from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+from langchain_groq.chat_models  import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.tools import tool
@@ -13,21 +13,17 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
+from config import UPLOAD_DIR, VECTOR_DB_PATH, DB_PATH
 import os
 import asyncio
-import json
 from datetime import datetime
-import uuid
 
 load_dotenv()
 
 # ============================================
 # GLOBAL VARIABLES (Shared across everything)
 # ============================================
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-VECTOR_DB_PATH = "vector_store.faiss"
 EMBEDDING_MODEL = "BAAI/bge-small-en"
 
 # These MUST be at module level and accessed everywhere
@@ -39,17 +35,23 @@ tool_dict = None
 
 # Load existing vector DB
 if os.path.exists(VECTOR_DB_PATH):
-    db = FAISS.load_local(VECTOR_DB_PATH, embeddings, allow_dangerous_deserialization=True)
+    db = FAISS.load_local(str(VECTOR_DB_PATH), embeddings, allow_dangerous_deserialization=True)
     # print(f"Loaded existing vector DB with {db.index.ntotal} vectors")
 
 # ============================================
 # LLM SETUP
 # ============================================
-llm = HuggingFaceEndpoint(
-    repo_id="openai/gpt-oss-20b",
-    task="text-generation"
+# llm = HuggingFaceEndpoint(
+#     repo_id="openai/gpt-oss-20b",
+#     task="text-generation"
+# )
+# model = ChatHuggingFace(llm=llm)
+
+model = ChatGroq(
+    model="qwen/qwen3.8-27b",
+    temperature=0,
+    api_key=os.getenv("GROQ_API_KEY"),
 )
-model = ChatHuggingFace(llm=llm)
 
 NOW = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -184,21 +186,32 @@ Be concise, accurate, and always choose the correct tool.
 # ============================================
 # MCP SERVER CONFIG
 # ============================================
+# SERVERS = {
+#     "Calculator_Server": {
+#         "transport": "stdio",
+#         "command": "uv",
+#         "args": ["run", "fastmcp", "run", "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/main.py"]
+#     },
+#     "Expense_Server": {
+#         "transport": "stdio",
+#         "command": "uv",
+#         "args": ["run", "fastmcp", "run", "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/local_expense_tracking_server.py"]
+#     }
+# }
 SERVERS = {
     "Calculator_Server": {
         "transport": "stdio",
-        "command": "uv",
-        "args": ["run", "fastmcp", "run", "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/main.py"]
+        "command": "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/.venv/Scripts/fastmcp.exe",
+        "args": ["run", "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/main.py"],
     },
     "Expense_Server": {
         "transport": "stdio",
-        "command": "uv",
-        "args": ["run", "fastmcp", "run", "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/local_expense_tracking_server.py"]
-    }
+        "command": "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/.venv/Scripts/fastmcp.exe",
+        "args": ["run", "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/local_expense_tracking_server.py"],
+    },
 }
 
 client = MultiServerMCPClient(SERVERS)
-
 
 # ============================================
 # RAG FUNCTIONS
@@ -258,14 +271,14 @@ def process_uploaded_file(file_path: str, file_id: str):
     # CLEAR OLD DATABASE (for testing - remove this later)
     import shutil
     if os.path.exists(VECTOR_DB_PATH):
-        shutil.rmtree(VECTOR_DB_PATH, ignore_errors=True)
+        shutil.rmtree(str(VECTOR_DB_PATH), ignore_errors=True)
     
     # Create fresh database
     db = FAISS.from_texts(texts=chunks, embedding=embeddings, metadatas=metadatas)
-    db.save_local(VECTOR_DB_PATH)
+    db.save_local(str(VECTOR_DB_PATH))
     
     # Reload
-    db = FAISS.load_local(VECTOR_DB_PATH, embeddings, allow_dangerous_deserialization=True)
+    db = FAISS.load_local(str(VECTOR_DB_PATH), embeddings, allow_dangerous_deserialization=True)
     
     # Verify
     test = db.similarity_search("test", k=5)
@@ -273,7 +286,6 @@ def process_uploaded_file(file_path: str, file_id: str):
     print(f" Verified: {len(matching)} docs with file_id")
     
     ACTIVE_FILE_ID = file_id
-
 
 @tool
 def rag_query(query: str) -> str:
@@ -314,7 +326,6 @@ def rag_query(query: str) -> str:
     # print(f" Returning {len(context)} characters of context") 
     # print(f"{'='*60}\n")
     return context[:5000]
-
 
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
@@ -420,7 +431,7 @@ async def setup_graph():
             return "tools"
         return "__end__"
 
-    conn = await aiosqlite.connect("chatbot.db")
+    conn = await aiosqlite.connect(str(DB_PATH))
     checkpointer = AsyncSqliteSaver(conn=conn)
 
     graph = StateGraph(ChatState)
@@ -464,9 +475,6 @@ async def stream_graph_updates(chatbot, initial_state, config):
                         # Tool result
                         yield {"type": "tool_result", "content": message.content, "tool": message.name}
 
-
-
-
 async def load_chat_history(checkpointer, thread_id):
     config = {"configurable": {"thread_id": thread_id}}
     checkpoint = await checkpointer.aget(config)
@@ -474,39 +482,39 @@ async def load_chat_history(checkpointer, thread_id):
         return checkpoint.get("channel_values", {}).get("messages", [])
     return []
 
-# async def main():
-#     chatbot, tool_dict = await setup_graph()
+async def main():
+    chatbot, tool_dict = await setup_graph()
 
-#     # Example interaction
-#     user_message = "add the expense of 80rs for food today"
-#     initial_state: ChatState = {"messages": [HumanMessage(content=user_message)]}
-#     config = {"configurable": {"thread_id": "chat-6"}}
+    # Example interaction
+    user_message = "add the expense of 80rs for food today"
+    initial_state: ChatState = {"messages": [HumanMessage(content=user_message)]}
+    config = {"configurable": {"thread_id": "chat-6"}}
 
-#     print(f"User: {user_message}\n")
+    print(f"User: {user_message}\n")
     
-#     # Stream the conversation
-#     print("=== STREAMING UPDATES ===")
-#     async for update in stream_graph_updates(chatbot, initial_state, config):
-#         print(f"Update: {update}")
-#     print("=========================\n")
+    # Stream the conversation
+    print("=== STREAMING UPDATES ===")
+    async for update in stream_graph_updates(chatbot, initial_state, config):
+        print(f"Update: {update}")
+    print("=========================\n")
     
-#     # Get final state
-#     final_state = await chatbot.aget_state(config)
+    # Get final state
+    final_state = await chatbot.aget_state(config)
     
-#     print("\n=======================================================================")
-#     print("=== FINAL STATE ===")
-#     for i, msg in enumerate(final_state.values["messages"]):
-#         print(f"\nMessage {i}: {type(msg).__name__}")
-#         print(f"Content: {msg.content[:100] if len(msg.content) > 100 else msg.content}")
-#         if hasattr(msg, "tool_calls") and msg.tool_calls:
-#             print(f"Tool calls: {msg.tool_calls}")
-#     print("=======================================================================\n")
+    print("\n=======================================================================")
+    print("=== FINAL STATE ===")
+    for i, msg in enumerate(final_state.values["messages"]):
+        print(f"\nMessage {i}: {type(msg).__name__}")
+        print(f"Content: {msg.content[:100] if len(msg.content) > 100 else msg.content}")
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            print(f"Tool calls: {msg.tool_calls}")
+    print("=======================================================================\n")
     
-#     if final_state.values["messages"]:
-#         last_message = final_state.values["messages"][-1]
-#         print(f"Chatbot Final Response: {last_message.content}")
+    if final_state.values["messages"]:
+        last_message = final_state.values["messages"][-1]
+        print(f"Chatbot Final Response: {last_message.content}")
     
-#     await chatbot.checkpointer.conn.close()
+    await chatbot.checkpointer.conn.close()
 
-# if __name__ == "__main__":
-#     asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

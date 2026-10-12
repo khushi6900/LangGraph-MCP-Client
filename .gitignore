@@ -21,3 +21,10 @@ uploads/
 vector_store.*
 *.faiss
 *.pkl
+
+data/
+tests/
+
+uv.lock
+pyproject.toml
+tailwind.config.js

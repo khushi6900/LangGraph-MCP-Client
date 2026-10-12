@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from Chatbot_with_mcp import setup_graph, load_chat_history, process_uploaded_file
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from config import UPLOAD_DIR
 import asyncio
 import json
 import logging
@@ -15,9 +16,6 @@ app = FastAPI()
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ------------------ CORS ------------------
 app.add_middleware(
@@ -37,7 +35,6 @@ ACTIVE_FILE_ID = None
 class ChatRequest(BaseModel):
     thread_id: str
     message: str
-
 
 # ------------------ Startup ------------------
 @app.on_event("startup")
