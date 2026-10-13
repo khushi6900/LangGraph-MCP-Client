@@ -12,7 +12,7 @@ const uploadStatus = document.getElementById("upload-status");
 // ACTIVE THREAD
 // ====================================
 
-const API_BASE = "http://127.0.0.1:8001";
+const API_BASE = "https://langgraph-mcp-client.onrender.com";
 
 let currentThreadId = null;
 
