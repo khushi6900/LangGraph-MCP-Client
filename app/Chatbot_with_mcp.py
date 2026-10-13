@@ -1,20 +1,24 @@
 from langgraph.graph import StateGraph, START
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage, AIMessage, SystemMessage
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-import aiosqlite
+# from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+# import aiosqlite
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 from langgraph.graph.message import add_messages
 from langchain_tavily import TavilySearch
 from langchain_groq.chat_models  import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain_huggingface import HuggingFaceEmbeddings
+# from langchain_huggingface import HuggingFaceEndpointEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.tools import tool
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
-from config import UPLOAD_DIR, VECTOR_DB_PATH, DB_PATH
+from app.config import UPLOAD_DIR, VECTOR_DB_PATH, DB_PATH, BASE_DIR
 import os
+import sys
 import asyncio
 from datetime import datetime
 
@@ -27,11 +31,18 @@ load_dotenv()
 EMBEDDING_MODEL = "BAAI/bge-small-en"
 
 # These MUST be at module level and accessed everywhere
-embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
-db = None  # Will be loaded/created
+# embeddings = HuggingFaceEndpointEmbeddings(model=EMBEDDING_MODEL, huggingfacehub_api_token=os.getenv("HF_TOKEN"))
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/gemini-embedding-001",
+    google_api_key=os.getenv("GOOGLE_API_KEY"),
+)
+
+db = None  # Will be loaded/created\
 ACTIVE_FILE_ID = None
+ACTIVE_FILE_NAME = None
 chatbot = None
 tool_dict = None
+pool = None
 
 # Load existing vector DB
 if os.path.exists(VECTOR_DB_PATH):
@@ -91,8 +102,7 @@ Do NOT use rag_query when the user asks about:
 - file id  
 - upload status  
 - file metadata  
-- whether a file exists  
-- general questions about "the document" that are NOT content-based  
+- whether a file exists 
 
 For these, answer directly using the metadata already stored in memory.  
 If no file exists, politely say: "No document has been uploaded yet."
@@ -186,30 +196,31 @@ Be concise, accurate, and always choose the correct tool.
 # ============================================
 # MCP SERVER CONFIG
 # ============================================
-# SERVERS = {
-#     "Calculator_Server": {
-#         "transport": "stdio",
-#         "command": "uv",
-#         "args": ["run", "fastmcp", "run", "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/main.py"]
-#     },
-#     "Expense_Server": {
-#         "transport": "stdio",
-#         "command": "uv",
-#         "args": ["run", "fastmcp", "run", "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/local_expense_tracking_server.py"]
-#     }
-# }
 SERVERS = {
     "Calculator_Server": {
         "transport": "stdio",
-        "command": "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/.venv/Scripts/fastmcp.exe",
-        "args": ["run", "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/main.py"],
+        "command": sys.executable,
+        "args": [str(BASE_DIR / "servers" / "Calculator_server" / "main.py")]
     },
     "Expense_Server": {
         "transport": "stdio",
-        "command": "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/.venv/Scripts/fastmcp.exe",
-        "args": ["run", "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/local_expense_tracking_server.py"],
-    },
+        "command": sys.executable,
+        "args": [str(BASE_DIR / "servers" / "expense" / "local_expense_tracking_server.py")],
+        "env": {"DATABASE_URL": os.getenv("DATABASE_URL")}
+    }
 }
+# SERVERS = {
+#     "Calculator_Server": {
+#         "transport": "stdio",
+#         "command": "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/.venv/Scripts/fastmcp.exe",
+#         "args": ["run", "D:/Users/Khushi.Mahajan/Documents/Projects/MCP_Client_Server/Calculator_server/main.py"],
+#     },
+#     "Expense_Server": {
+#         "transport": "stdio",
+#         "command": "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/.venv/Scripts/fastmcp.exe",
+#         "args": ["run", "D:/Users/Khushi.Mahajan/Documents/Projects/test_remote_mcp_server/local_expense_tracking_server.py"],
+#     },
+# }
 
 client = MultiServerMCPClient(SERVERS)
 
@@ -223,7 +234,7 @@ def extract_text(file_path: str) -> str:
     print(f"   File exists: {os.path.exists(file_path)}")
     
     try:
-        if file_path.endswith(".txt"):
+        if file_path.endswith((".txt", ".md")):
             with open(file_path, "r", encoding="utf-8") as f:
                 text = f.read()
             # print(f" TXT extracted: {len(text)} chars")
@@ -254,11 +265,12 @@ def extract_text(file_path: str) -> str:
 
 def process_uploaded_file(file_path: str, file_id: str):
     """Extract → Split → Embed → Save to FAISS."""
-    global db, ACTIVE_FILE_ID
+    global db, ACTIVE_FILE_ID, ACTIVE_FILE_NAME
     
     print(f"\n PROCESSING: {file_path}")
     
     raw_text = extract_text(file_path)
+    print(f"Extracted chars: {len(raw_text)}")
     if not raw_text:
         return
     
@@ -286,6 +298,7 @@ def process_uploaded_file(file_path: str, file_id: str):
     print(f" Verified: {len(matching)} docs with file_id")
     
     ACTIVE_FILE_ID = file_id
+    ACTIVE_FILE_NAME = os.path.basename(str(file_path))
 
 @tool
 def rag_query(query: str) -> str:
@@ -331,7 +344,7 @@ class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 async def setup_graph():
-    global tool_dict
+    global tool_dict, pool
     
     tools = await client.get_tools()
     tavily_tool = TavilySearch(
@@ -353,7 +366,13 @@ async def setup_graph():
         # print(f"   Last: {state['messages'][-1].content[:100] if state['messages'] else 'None'}...")
         # print(f"   Global ACTIVE_FILE_ID: {ACTIVE_FILE_ID}\n")
         
-        messages = [SYSTEM_PROMPT] + state["messages"]
+        if ACTIVE_FILE_ID:
+            status = (f"\n\nA document IS uploaded: '{ACTIVE_FILE_NAME}'. "
+                    "For ANY question about its content, topic, summary, or what it is about, "
+                    "you MUST call rag_query.")
+        else:
+            status = "\n\nNo document has been uploaded yet."
+        messages = [SystemMessage(content=SYSTEM_PROMPT.content + status)] + state["messages"]
         
         accumulated_content = ""
         accumulated_tool_calls = []
@@ -431,8 +450,15 @@ async def setup_graph():
             return "tools"
         return "__end__"
 
-    conn = await aiosqlite.connect(str(DB_PATH))
-    checkpointer = AsyncSqliteSaver(conn=conn)
+    pool = AsyncConnectionPool(
+        os.getenv("DATABASE_URL"),
+        max_size=5,
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": 0}
+    )
+    await pool.open()
+    checkpointer = AsyncPostgresSaver(pool)
+    await checkpointer.setup()
 
     graph = StateGraph(ChatState)
     graph.add_node("chat_node", chat_node)
@@ -514,7 +540,7 @@ async def main():
         last_message = final_state.values["messages"][-1]
         print(f"Chatbot Final Response: {last_message.content}")
     
-    await chatbot.checkpointer.conn.close()
+    await pool.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

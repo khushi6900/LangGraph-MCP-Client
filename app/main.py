@@ -2,9 +2,10 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from Chatbot_with_mcp import setup_graph, load_chat_history, process_uploaded_file
+import app.Chatbot_with_mcp as bot
+from app.Chatbot_with_mcp import setup_graph, load_chat_history, process_uploaded_file
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from config import UPLOAD_DIR
+from app.config import UPLOAD_DIR
 import asyncio
 import json
 import logging
@@ -246,10 +247,9 @@ async def get_threads():
         raise HTTPException(500, "Chatbot not initialized")
 
     try:
-        rows = await chatbot.checkpointer.conn.execute_fetchall("""
-            SELECT DISTINCT thread_id
-            FROM checkpoints
-        """)
+        async with bot.pool.connection() as conn:
+            cur = await conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
+            rows = await cur.fetchall()
 
         thread_ids = [row[0] for row in rows if row[0] is not None]
         threads_with_summaries = []
@@ -329,11 +329,9 @@ async def delete_thread(thread_id: str):
         raise HTTPException(500, "Chatbot not initialized")
 
     try:
-        await chatbot.checkpointer.conn.execute(
-            "DELETE FROM checkpoints WHERE thread_id = ?",
-            (thread_id,)
-        )
-        await chatbot.checkpointer.conn.commit()
+        async with bot.pool.connection() as conn:
+            for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+                await conn.execute(f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,))
         logger.info(f"Deleted thread: {thread_id}")
         return {"deleted": True, "thread_id": thread_id}
     
@@ -346,45 +344,45 @@ async def delete_thread(thread_id: str):
 #                   DEBUG ENDPOINTS
 # ===================================================================
 
-@app.post("/chat/debug")
-async def chat_debug(request: ChatRequest):
-    """Debug endpoint to see raw chatbot state."""
-    if chatbot is None:
-        raise HTTPException(500, "Chatbot not initialized")
+# @app.post("/chat/debug")
+# async def chat_debug(request: ChatRequest):
+#     """Debug endpoint to see raw chatbot state."""
+#     if chatbot is None:
+#         raise HTTPException(500, "Chatbot not initialized")
     
-    try:
-        # Get current history
-        history_before = await load_chat_history(chatbot.checkpointer, request.thread_id)
+#     try:
+#         # Get current history
+#         history_before = await load_chat_history(chatbot.checkpointer, request.thread_id)
         
-        # Run chatbot
-        final_state = await chatbot.ainvoke(
-            {"messages": [HumanMessage(content=request.message)]},
-            config={"configurable": {"thread_id": request.thread_id}},
-        )
+#         # Run chatbot
+#         final_state = await chatbot.ainvoke(
+#             {"messages": [HumanMessage(content=request.message)]},
+#             config={"configurable": {"thread_id": request.thread_id}},
+#         )
         
-        # Return raw state
-        messages = []
-        for msg in final_state.get("messages", []):
-            msg_data = {
-                "type": type(msg).__name__,
-                "content": str(msg.content) if hasattr(msg, 'content') else str(msg),
-            }
+#         # Return raw state
+#         messages = []
+#         for msg in final_state.get("messages", []):
+#             msg_data = {
+#                 "type": type(msg).__name__,
+#                 "content": str(msg.content) if hasattr(msg, 'content') else str(msg),
+#             }
             
-            # Add tool_calls if present
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                msg_data["tool_calls"] = msg.tool_calls
+#             # Add tool_calls if present
+#             if hasattr(msg, 'tool_calls') and msg.tool_calls:
+#                 msg_data["tool_calls"] = msg.tool_calls
             
-            messages.append(msg_data)
+#             messages.append(msg_data)
         
-        return {
-            "history_before_count": len(history_before),
-            "total_messages": len(final_state.get("messages", [])),
-            "messages": messages
-        }
+#         return {
+#             "history_before_count": len(history_before),
+#             "total_messages": len(final_state.get("messages", [])),
+#             "messages": messages
+#         }
     
-    except Exception as e:
-        logger.error(f"Debug endpoint error: {e}", exc_info=True)
-        raise HTTPException(500, f"Debug error: {str(e)}")
+#     except Exception as e:
+#         logger.error(f"Debug endpoint error: {e}", exc_info=True)
+#         raise HTTPException(500, f"Debug error: {str(e)}")
 
 
 @app.get("/tools")
