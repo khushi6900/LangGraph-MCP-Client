@@ -1,9 +1,15 @@
+import sys, asyncio
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from fastmcp import FastMCP
 import os
 import json
 import psycopg
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
+from datetime import date as _d, datetime, timedelta
+from typing import Literal, Optional
 
 load_dotenv()
 # Use temporary directory which should be writable
@@ -11,28 +17,34 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 CATEGORIES_PATH = os.path.join(PROJECT_DIR, "categories.json")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Load expense categories at startup for easy access
+try:
+    with open(CATEGORIES_PATH, "r", encoding="utf-8") as f:
+        cat_data = json.load(f)
+        if isinstance(cat_data, dict):
+            # Use keys as top‑level categories
+            CATEGORIES_LIST = list(cat_data.keys())
+        else:
+            CATEGORIES_LIST = cat_data
+except Exception:
+    CATEGORIES_LIST = []
+
+CATS = tuple(CATEGORIES_LIST) or ("Food & Dining","Transportation","Shopping","Entertainment",
+    "Bills & Utilities","Healthcare","Travel","Education","Business","Other")
+
+Category = Literal[CATS]
+
+def _iso(s: Optional[str], default: _d) -> str:
+    if not s:
+        return default.isoformat()
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        raise ValueError(f"Invalid date format: {s}. Expected YYYY-MM-DD.")
+
 mcp = FastMCP("ExpenseTracker")
 
 def init_db():  # Keep as sync for initialization
-    # try:
-    #     # Use synchronous sqlite3 just for initialization
-    #     import sqlite3
-    #     with sqlite3.connect(DB_PATH) as c:
-    #         c.execute("PRAGMA journal_mode=WAL")
-    #         c.execute("""
-    #             CREATE TABLE IF NOT EXISTS expenses(
-    #                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #                 date TEXT NOT NULL,
-    #                 amount REAL NOT NULL,
-    #                 category TEXT NOT NULL,
-    #                 subcategory TEXT DEFAULT '',
-    #                 note TEXT DEFAULT ''
-    #             )
-    #         """)
-    #         print("Database initialized successfully")
-    # except Exception as e:
-    #     print(f"Database initialization error: {e}")
-    #     raise
     with psycopg.connect(DATABASE_URL, autocommit=True) as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS expenses(
@@ -54,26 +66,55 @@ async def get_db_conn():
     )
 
 @mcp.tool()
-async def add_expense(date, amount, category, subcategory="", note=""):  # Changed: added async
+async def add_expense(amount: float, category: Category, date: str, subcategory: str = "", note: str = ""):
     '''Add a new expense entry to the database.'''
     try:
-        async with await get_db_conn() as c:  # Changed: added async
-            cur = await c.execute(  # Changed: added await
-                "INSERT INTO expenses(date, amount, category, subcategory, note)"
-                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        # Normalize category: if numeric or index, map to name if possible
+        date = _iso(date, _d.today())
+        if isinstance(category, (int, float)):
+            idx = int(category)
+            if 0 <= idx < len(CATEGORIES_LIST):
+                category = CATEGORIES_LIST[idx]
+            else:
+                category = str(category)
+        elif isinstance(category, str) and category.isdigit():
+            idx = int(category)
+            if 0 <= idx < len(CATEGORIES_LIST):
+                category = CATEGORIES_LIST[idx]
+            else:
+                category = category
+
+        # Normalize date: if integer or year‑only string, convert to ISO format (YYYY-01-01)
+        if isinstance(date, int):
+            date = f"{date:04d}-01-01"
+        elif isinstance(date, str):
+            if len(date) == 4 and date.isdigit():
+                date = f"{date}-01-01"
+            else:
+                pass
+
+        async with await get_db_conn() as c:
+            cur = await c.execute(
+                """
+                INSERT INTO expenses(date, amount, category, subcategory, note)
+                VALUES (%s, %s, %s, %s, %s) RETURNING id
+                """,
                 (date, amount, category, subcategory, note)
             )
             row = await cur.fetchone()
             return {"status": "success", "id": row["id"], "message": "Expense added successfully"}
-    except Exception as e:  # Changed: simplified exception handling
+    except Exception as e:
         return {"status": "error", "message": f"Database error: {str(e)}"}
-    
+
 @mcp.tool()
-async def list_expenses(start_date, end_date):  # Changed: added async
+async def list_expenses(start_date: Optional[str]=None, end_date: Optional[str]=None):
     '''List expense entries within an inclusive date range.'''
     try:
-        async with await get_db_conn() as c:  # Changed: added async
-            cur = await c.execute(  # Changed: added await
+        t= _d.today()
+        start_date = _iso(start_date, t.replace(day=1))
+        end_date = _iso(end_date, t)
+        async with await get_db_conn() as c:
+            cur = await c.execute(
                 """
                 SELECT id, date, amount, category, subcategory, note
                 FROM expenses
@@ -87,10 +128,10 @@ async def list_expenses(start_date, end_date):  # Changed: added async
         return {"status": "error", "message": f"Error listing expenses: {str(e)}"}
 
 @mcp.tool()
-async def summarize(start_date, end_date, category=None):  # Changed: added async
+async def summarize(start_date: Optional[str]=None, end_date: Optional[str]=None, category: Optional[str] = None):
     '''Summarize expenses by category within an inclusive date range.'''
     try:
-        async with await get_db_conn() as c:  # Changed: added async
+        async with await get_db_conn() as c:
             query = """
                 SELECT category, SUM(amount) AS total_amount, COUNT(*) as count
                 FROM expenses
@@ -107,9 +148,9 @@ async def summarize(start_date, end_date, category=None):  # Changed: added asyn
     except Exception as e:
         return {"status": "error", "message": f"Error summarizing expenses: {str(e)}"}
 
-@mcp.resource("expense:///categories", mime_type="application/json")  # Changed: expense:// → expense:///
+@mcp.resource("expense:///categories", mime_type="application/json")
 def categories():
-    try:    
+    try:
         with open(CATEGORIES_PATH, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
@@ -120,5 +161,4 @@ def categories():
 
 # Start the server
 if __name__ == "__main__":
-    # mcp.run(transport="http", host="0.0.0.0", port=8000)
     mcp.run()

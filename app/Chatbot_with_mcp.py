@@ -192,6 +192,10 @@ Assistant: Answer directly from metadata.
 Follow these rules strictly.
 When listing expenses, you MUST use the table format shown above.
 Be concise, accurate, and always choose the correct tool.
+
+For expense tools, dates must be full YYYY-MM-DD strings. 
+Never pass a year alone. Category must be a category name, never a number. 
+For "today" or "current month", omit the date arguments.
 """)
 # ============================================
 # MCP SERVER CONFIG

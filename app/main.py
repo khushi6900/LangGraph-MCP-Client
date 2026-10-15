@@ -42,9 +42,17 @@ class ChatRequest(BaseModel):
 async def startup_event():
     global chatbot, tool_dict
     chatbot, tool_dict = await setup_graph()
+
+    async with bot.pool.connection() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS thread_files(
+                file_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                uploaded_at TIMESTAMPTZ DEFAULT now())
+            """)
     logger.info("Chatbot initialized!")
     logger.info(f"Available tools: {list(tool_dict.keys())}")
-
 
 # ------------------ Routes ------------------
 @app.get("/")
@@ -83,7 +91,11 @@ async def upload_file(thread_id: str, file: UploadFile = File(...)):
         # Process the file
         process_uploaded_file(file_path, file_id)
         
-
+        async with bot.pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO thread_files(file_id, thread_id, filename) VALUES (%s,%s,%s)",
+                (file_id, thread_id, file.filename))
+            
         if db:
             print(f"Total vectors: {db.index.ntotal}")
             
@@ -274,7 +286,6 @@ async def get_threads():
         logger.error(f"Error fetching threads: {e}", exc_info=True)
         raise HTTPException(500, f"Error fetching threads: {str(e)}")
 
-
 @app.get("/thread/{thread_id}")
 async def get_thread(thread_id: str):
     """Get all messages for a specific thread."""
@@ -321,7 +332,6 @@ async def get_thread(thread_id: str):
         logger.error(f"Error fetching thread: {e}", exc_info=True)
         raise HTTPException(500, f"Error fetching thread: {str(e)}")
 
-
 @app.delete("/thread/{thread_id}")
 async def delete_thread(thread_id: str):
     """Delete a specific thread."""
@@ -339,6 +349,14 @@ async def delete_thread(thread_id: str):
         logger.error(f"Error deleting thread: {e}", exc_info=True)
         raise HTTPException(500, f"Error deleting thread: {str(e)}")
 
+@app.get("/files/{thread_id}")
+async def list_files(thread_id: str):
+    async with bot.pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT file_id, filename FROM thread_files WHERE thread_id=%s ORDER BY uploaded_at",
+            (thread_id,))
+        rows = await cur.fetchall()
+    return {"files": [{"file_id": r[0], "filename": r[1]} for r in rows]}
 
 # ===================================================================
 #                   DEBUG ENDPOINTS

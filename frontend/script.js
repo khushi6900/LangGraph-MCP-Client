@@ -12,7 +12,8 @@ const uploadStatus = document.getElementById("upload-status");
 // ACTIVE THREAD
 // ====================================
 
-const API_BASE = "https://langgraph-mcp-client.onrender.com";
+// const API_BASE = "https://langgraph-mcp-client.onrender.com";
+const API_BASE = "http://127.0.0.1:8001";
 
 let currentThreadId = null;
 
@@ -38,6 +39,42 @@ uploadBtn.addEventListener("click", () => {
     hiddenInput.click();
 });
 
+// -- BEGIN STORAGE HELPERS -------------------------------------------------
+const FILE_STORAGE_KEY_PREFIX = 'uploaded_files_';
+function getFileStorageKey(threadId) {
+    return FILE_STORAGE_KEY_PREFIX + threadId;
+}
+function loadUploadedFilesFromStorage(threadId) {
+    try {
+        const data = localStorage.getItem(getFileStorageKey(threadId));
+        const parsed = data ? JSON.parse(data) : [];
+        // Deduplicate by fileId
+        const unique = [];
+        const seen = new Set();
+        for (const f of parsed) {
+            if (!seen.has(f.fileId)) {
+                seen.add(f.fileId);
+                unique.push(f);
+            }
+        }
+        return unique;
+    } catch (e) {
+        console.warn("Failed to parse downloaded files", e);
+        return [];
+    }
+}
+function saveUploadedFilesToStorage(threadId, files) {
+    try {
+        localStorage.setItem(getFileStorageKey(threadId), JSON.stringify(files));
+    } catch (e) {
+        console.warn("Failed to save uploaded files", e);
+    }
+}
+function clearUploadedFilesForThread(threadId) {
+    localStorage.removeItem(getFileStorageKey(threadId));
+}
+// -- END STORAGE HELPERS -------------------------------------------------
+
 hiddenInput.addEventListener("change", async () => {
     const file = hiddenInput.files[0];
     if (!file) return;
@@ -61,11 +98,7 @@ hiddenInput.addEventListener("change", async () => {
 
         addUploadedFileToUI(file.name, data.file_id, data.active_file_id);
 
-        uploadStatus.innerHTML = `
-            <span class="text-emerald-600">
-                Uploaded: ${file.name} (Vectors: ${data.total_vectors})
-            </span>
-        `;
+        uploadStatus.innerHTML = `<span class="text-emerald-600">Uploaded: ${file.name} (Vectors: ${data.total_vectors})</span>`;
 
         setTimeout(() => (uploadStatus.innerHTML = ""), 3000);
 
@@ -76,23 +109,42 @@ hiddenInput.addEventListener("change", async () => {
 });
 
 function addUploadedFileToUI(filename, fileId, activeFileId) {
-
     const fileItem = document.createElement("div");
-    fileItem.className =
-        "px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-700 flex justify-between items-center gap-2";
+    fileItem.className = "px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-700 flex justify-between items-center gap-2";
 
     const isActive = fileId === activeFileId;
 
-    fileItem.innerHTML = `
-        <span class="truncate">${filename}</span>
-        ${
-            isActive
-                ? `<span class="text-emerald-600 font-medium text-[11px]">(Active)</span>`
-                : `<span class="text-slate-400 text-[11px]">Uploaded</span>`
-        }
-    `;
+    fileItem.innerHTML = `<span class="truncate">${filename}</span>`
+        + (isActive
+            ? `<span class="text-emerald-600 font-medium text-[11px]">(Active)</span>`
+            : `<span class="text-slate-400 text-[11px]">Uploaded</span>`);
 
     uploadedFilesContainer.appendChild(fileItem);
+
+    // Persist to localStorage
+    const existing = loadUploadedFilesFromStorage(currentThreadId);
+    if (!existing.some(f => f.fileId === fileId)) {
+        existing.push({ filename, fileId, activeFileId });
+    }
+    saveUploadedFilesToStorage(currentThreadId, existing);
+}
+
+// --- Load files for a specific thread ------------------------------------
+// Clears the UI before rendering to avoid duplicates
+function loadFilesForThread(threadId) {
+    uploadedFilesContainer.innerHTML = "";
+    const files = loadUploadedFilesFromStorage(threadId);
+    files.forEach(f => {
+        const fileItem = document.createElement("div");
+        fileItem.className = "px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-700 flex justify-between items-center gap-2";
+
+        const isActive = f.fileId === f.activeFileId;
+        fileItem.innerHTML = `<span class="truncate">${f.filename}</span>` +
+            (isActive
+                ? `<span class="text-emerald-600 font-medium text-[11px]">(Active)</span>`
+                : `<span class="text-slate-400 text-[11px]">Uploaded</span>`);
+        uploadedFilesContainer.appendChild(fileItem);
+    });
 }
 
 // ====================================
@@ -168,14 +220,11 @@ function renderToolEvent(tool, args = {}) {
     wrapper.className = "flex justify-start items-start gap-3";
 
     const bubble = document.createElement("div");
-    bubble.className =
-        "bg-slate-100 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg max-w-xl font-mono text-xs";
+    bubble.className = "bg-slate-100 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg max-w-xl font-mono text-xs";
 
     let argsDisplay = "";
     if (args && Object.keys(args).length > 0) {
-        argsDisplay = `<div class="text-xs mt-1 text-slate-500">
-            Args: ${JSON.stringify(args)}
-        </div>`;
+        argsDisplay = `<div class="text-xs mt-1 text-slate-500">Args: ${JSON.stringify(args)}</div>`;
     }
 
     bubble.innerHTML = `<b>Executing tool: ${tool}</b>${argsDisplay}`;
@@ -328,6 +377,9 @@ async function loadThreads() {
                     clearChat();
                 }
 
+                // Remove persisted file list for this thread
+                clearUploadedFilesForThread(threadId);
+
                 loadThreads();
             };
 
@@ -336,6 +388,9 @@ async function loadThreads() {
                 currentThreadId = threadId;
                 await loadChatMessages(threadId);
                 loadThreads();
+
+                // Load persisted files for selected thread
+                loadFilesForThread(threadId);
             };
 
             row.appendChild(titleEl);
@@ -532,6 +587,7 @@ newChatBtn.addEventListener("click", () => {
     clearChat();
     loadThreads();
     renderBotMessage("New chat started. How can I help?");
+    uploadedFilesContainer.innerHTML = ""; // clear file list for brand new thread
 });
 
 // ====================================
